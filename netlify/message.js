@@ -6,34 +6,23 @@
  */
 
 const crypto = require('crypto');
+const assert = require('assert');
+
+const {
+    HEADER_LENGTH, 
+    MAGIC_COOKIE, 
+    TRANSACTION_ID_LENGTH, 
+    CHECKSUM_LENGTH,
+    attrTypes,
+    attrTypesInv,
+    msgTypes,
+    msgTypesInv,
+    MESSAGE_INTEGRITY_PK
+} = require("./constants.js")
+
+const {HMAC_SHA1, AToInetN} = require("./utils.js");
 
 
-const HEADER_LENGTH = 20
-const MAGIC_COOKIE = 0x2112A442; /* RFC - 5389 */
-const TRANSACTION_ID_LENGTH = 16;
-
-const attrTypes = {
-    0x0001: 'MAPPED-ADDRESS',
-    0x0002: 'RESPONSE-ADDRESS',
-    0x0003: 'CHANGE-REQUEST',
-    0x0004: 'SOURCE-ADDRESS',
-    0x0005: 'CHANGED-ADDRESS',
-    0x0006: 'USERNAME',
-    0x0007: 'PASSWORD',
-    0x0008: 'MESSAGE-INTEGRITY',
-    0x0009: 'ERROR-CODE',
-    0x000a: 'UNKNOWN-ATTRIBUTES',
-    0x000b: 'REFLECTED-FROM'
-}
-
-const msgTypes = {
-    0x0001  :  'Binding Request',
-    0x0101  :  'Binding Response',
-    0x0111  :  'Binding Error Response',
-    0x0002  :  'Shared Secret Request',
-    0x0102  :  'Shared Secret Response',
-    0x0112  :  'Shared Secret Error Response'
-}
 
 class Message{
     constructor(){
@@ -49,7 +38,7 @@ class Message{
     }
 
     getAttr(attrType){
-        return this._attrs.find((_attr) => { return _attr.type == attrType});
+        return this._attrs.find((_attr) => { return _attr.type == attrType}).value;
     }
 
     addAttr(attrType, attrVal){
@@ -58,6 +47,10 @@ class Message{
 
     setType(msgType){
         this._msgType = msgType;
+    }
+
+    setTransactionID(transactionId){
+        this._transactionId = transactionId;
     }
 
     #inetNToA(inet){
@@ -73,19 +66,6 @@ class Message{
         }
 
         return d;
-    }
-
-    #AToInetN(a){
-        var inet = 0;
-
-        for(var loc of a.split('.')){
-            loc = parseInt(loc);
-            assert((loc >= 0) && (loc < 256), 'malformed IPv4');
-            inet = inet << 8;
-            inet += loc;
-        }
-
-        return inet;
     }
 
     #readInetAddress(buf, pos){
@@ -133,7 +113,7 @@ class Message{
         buf.writeUInt16BE(inet_addr['PORT'], pos);
         pos += 2;
 
-        buf.writeUInt32BE(this.#AToInetN(ip), pos);
+        buf.writeUInt32BE(AToInetN(ip), pos);
         pos += 4;
 
         return pos;
@@ -168,11 +148,11 @@ class Message{
         pos += 4;
 
         // check if first two bytes is zero padding
-        var padding = data && ((1 << 32) - (1 << 11));
+        var padding = data >> 11;
         assert(padding == 0, 'malformed error padding');
 
-        var statusClass = data && ((1 << 11) - (1 << 8));
-        var statusNumber = data && (1 << 8);
+        var statusClass = (data & ((1 << 11) - (1 << 8))) / (1 << 8);
+        var statusNumber = data & ((1 << 8) - 1);
         var statusCode = statusClass * 100 + statusNumber;
 
         var message = buf.toString('utf-8', pos, pos + length - 4);
@@ -192,7 +172,7 @@ class Message{
         buf.writeUInt32BE(status, pos);
         pos += 4;
 
-        msgPaddingLength = (4 - (message.length % 4)) % 4;
+        var msgPaddingLength = (4 - (message.length % 4)) % 4;
         message += ' '.repeat(msgPaddingLength);
 
         buf.write(message, pos);
@@ -223,6 +203,13 @@ class Message{
         return pos;
     }
 
+    static HMAC_SHA(message){
+        var shaSum = crypto.createHash('sha1');
+        shaSum.update(message);
+        var digest = shaSum.digest('utf-8');
+        return digest;
+    }
+
     #writeSHA(buf, pos, message){
         // pad message so that message is length is a multiple of 64 bytes
         var paddingLength = (64 - (message.length % 64)) % 64;
@@ -231,22 +218,76 @@ class Message{
 
         message = Buffer.concat([message, paddingBuffer]);
 
-        var shaSum = crypto.createHash('sha1');
-        shaSum.update(message);
-        var digest = shaSum.digest('utf-8');
+        var digest = HMAC_SHA1(message, MESSAGE_INTEGRITY_PK);
 
         buf.write(digest, pos);
-        pos += 20;
+        pos += CHECKSUM_LENGTH;
 
         return pos;
     }
 
-    serialize(buf, data){
+    #getBufferLength(){
+        var len = 0;
+
+        // message header
+        len += 2 + 2 + TRANSACTION_ID_LENGTH;
+
+        // payload
+        for(var attr of this._attrs){
+            var attrType = attr['type'];
+            var attrVal = attr['value'];
+
+            // for type-length
+            len += 4;
+
+            switch(attrType){
+                case 'MAPPED-ADDRESS': 
+                case 'RESPONSE-ADDRESS':
+                case 'SOURCE-ADDRESS':
+                case 'REFLECTED-FROM':
+                case 'CHANGED-ADDRESS':
+                    len += 8;
+                    break;
+                case 'CHANGE-REQUEST':
+                    len += 4;
+                    break;
+                case 'USERNAME':
+                case 'PASSWORD':
+                    len += attrVal.length;
+                    break;
+                case 'ERROR-CODE':
+                    var {_, message} = attrVal;
+                    var msgPaddingLength = (4 - (message.length % 4)) % 4;
+                    len += 4 + message.length + msgPaddingLength;
+                    break;
+                case 'UNKNOWN-ATTRIBUTES':
+                    len += 2 * attrVal.length;
+                    break;
+                case 'MESSAGE-INTEGRITY':
+                    len += CHECKSUM_LENGTH;
+                    break;
+            }
+        }
+
+        return len;
+    }
+
+    serialize(){
+        // allocate buffer
+        var size = this.#getBufferLength();
+
+        var buf = new Buffer.alloc(size);
+
         var pos = 0;
 
         // message type
-        var msgType = data['msgType'];
-        assert(Object.keys(msgTypes).includes(msgType), 'invalid message type');
+        var msgType = this._msgType;
+        assert(
+            Object.keys(msgTypes).some((key) => {
+                return key == msgType.toString(10);
+            }), 
+            'invalid message type'
+        );
         buf.writeUInt16BE(msgType, pos);
         pos += 2;
 
@@ -256,7 +297,7 @@ class Message{
         pos += 2;
 
         // transaction id
-        var tid = data['tid'];
+        var tid = this._transactionId;
         assert((tid != undefined) && (tid.length == TRANSACTION_ID_LENGTH), 'malformed transaction id');
         for(var i = 0; i < TRANSACTION_ID_LENGTH; i++){
             buf[pos + i] = tid[i]; 
@@ -266,12 +307,12 @@ class Message{
         var messagePayloadStartPos = pos;
 
         // add T-L-V's for each attribute
-        for(var attr of data['attrs']){
+        for(var attr of this._attrs){
             var attrType = attr['type'];
             var attrVal = attr['value'];
 
             // write attrType
-            buf.writeUInt16BE(attrType, pos);
+            buf.writeUInt16BE(attrTypesInv[attrType], pos);
             pos +=2;
 
             // skip attribute length; add it later
@@ -290,16 +331,17 @@ class Message{
                     break;
                 case 'USERNAME':
                 case 'PASSWORD':
-                    assert((typeof(attrVal) == 'string') && ((attrVal.length % 4) == 0), 'malformed auth parameter');
-                    pos += 2;
-                    buf.write(attrVal, pos);
-                    endPos = pos + attrVal.length;
+                    assert(Buffer.isBuffer(attrVal) && ((attrVal.length % 4) == 0), 'malformed auth parameter');
+                    // pos += 2;
+                    // buf.write(attrVal, pos);
+                    attrVal.copy(buf, pos + 2, 0, attrLength);
+                    endPos = pos + 2 + attrVal.length;
                     break;
                 case 'ERROR-CODE':
                     var endPos = this.#writeError(buf, pos + 2, attrVal);
                     break;
                 case 'UNKNOWN-ATTRIBUTES':
-                    var endPos = this.#writeUnknownAttrs(buf, pos + 2, attrVal);
+                    var endPos = this.#writeUnknownAttrs(buf, pos + 2, this._unknown_attrs);
                     break;
                 case 'MESSAGE-INTEGRITY':
                     var endPos = this.#writeSHA(buf, pos + 2, buf.slice(0, pos - 2));
@@ -313,6 +355,8 @@ class Message{
 
         var messageLength = pos - messagePayloadStartPos;
         buf.writeUInt16BE(messageLength, messageLengthStartPos);
+
+        return buf;
     }
 
     deserialize(buf){
@@ -325,7 +369,6 @@ class Message{
          * parses header into
          *      - message type
          *      - message length
-         *      - magic cookie
          *      - transaction id
          * parses payload into
          *      - attributes with attribute name and value
@@ -340,7 +383,12 @@ class Message{
 
         var msgType = buf.readUInt16BE(pos);
         pos += 2;
-        assert(Object.keys(msgTypes).includes(msgType), 'invalid message type');
+        assert(
+            Object.keys(msgTypes).some((key) => {
+                return key == msgType.toString(10);
+            }), 
+            'invalid message type'
+        );
 
         var msgLength = buf.readUInt16BE(pos);
         pos += 2;
@@ -359,7 +407,7 @@ class Message{
             throw new Error("message length in header mismatch");
         }
 
-        attrs = [];
+        var attrs = [], unknown_attrs = [];
 
         while(pos < buf.length){
             if(buf.length - pos < 4){
@@ -367,10 +415,17 @@ class Message{
             }
 
             var attrType = buf.readUInt16BE(pos);
+            // assert(
+            //     Object.keys(attrTypes).some((key) => {
+            //         return key == attrType.toString(10);
+            //     }), 
+            //     'invalid attribute type'
+            // )
+
             attrType = attrTypes[attrType];
             pos += 2;
 
-            attrLength = buf.readUInt16BE(pos);
+            var attrLength = buf.readUInt16BE(pos);
             pos += 2;
 
             var attrVal;
@@ -405,31 +460,38 @@ class Message{
                     }
                     attrVal = this.#readError(buf, pos, attrLength);
                     break;
-                case 'UNKNOWN-ATTRIBUTES':
-                    if(attrLength % 4 != 0){
-                        throw new Error(`value of ${attrType} malformed`);
-                    }
-                    attrVal = this.#readUnknownAttrs(buf, pos, attrLength);
-                    break;
                 case 'MESSAGE-INTEGRITY':
-                    assert(attrLength == 20, 'HMAC-SHA1 value must be 20 bytes');
+                    assert(attrLength == CHECKSUM_LENGTH, 'HMAC-SHA1 value must be 20 bytes');
                     attrVal = buf.toString('utf-8', pos, pos + attrLength);
                     break;
             }
 
             pos += attrLength;
 
-            attrs.push({type: attrType, value: attrVal});
+            if(Object.keys(attrTypesInv).some((key) => {
+                return key == attrType;
+            })){
+                attrs.push({type: attrType, value: attrVal});
+            }
+            else{
+                if(attrTypesInv[attrType] <= 0x7fff){
+                    unknown_attrs.push(attrType);
+                }
+            }
         }
 
         this._msgType = msgType;
         this._transactionId = transactionId;
         this._attrs = attrs;
+        this._unknown_attrs = unknown_attrs;
 
         return {
             msgType,
             transactionId,
-            attrs
+            attrs,
+            unknown_attrs
         };
     }
 }
+
+module.exports = Message

@@ -1,0 +1,21 @@
+{
+  "name": "stun-server",
+  "version": "1.0.0",
+  "description": "STUN server implementation in nodeJS",
+  "main": "message.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "author": "Arka",
+  "license": "MIT",
+  "devDependencies": {
+    "@babel/plugin-proposal-decorators": "^7.20.2"
+  },
+  "plugins": [
+    "@babel/plugin-proposal-decorators"
+  ],
+  "dependencies": {
+    "nodemon": "^2.0.20"
+  }
+}
