@@ -1,3 +1,5 @@
+'use strict';
+
 /**
   * Message attributes
                                              Binding  Shared  Shared  Shared
@@ -53,42 +55,46 @@
             The client should not retry.
  */
 
-
-
 const dgram = require("node:dgram");
 const tls = require('tls');
 const fs = require('node:fs');
+var path = require('path');
 
-const {generateAuth, HMAC_SHA1, checkTokenFresh} = require("./utils.js");
+console.log();
+
+const {generateAuth, HMAC_SHA1, checkTokenFresh} = require("../utils/utils.js");
 const Message = require("./message.js");
-const { msgTypesInv, INTEGRITY_REQUIRED, MESSAGE_INTEGRITY_PK, errorCodes } = require("./constants.js");
+const { msgTypesInv, INTEGRITY_REQUIRED, MESSAGE_INTEGRITY_PK, errorCodes, CHECKSUM_LENGTH, IPFAMILY } = require("../utils/constants.js");
+
 
 const tlsOptions = {
-    key: fs.readFileSync('cert/server/server.key', {encoding: 'utf-8'}),
-    cert: fs.readFileSync('cert/server/server.crt', {encoding: 'utf-8'}),
+    key: fs.readFileSync(path.dirname(path.basename(__dirname)) + '/cert/server/server.key', {encoding: 'utf-8'}),
+    cert: fs.readFileSync(path.dirname(path.basename(__dirname)) + '/cert/server/server.crt', {encoding: 'utf-8'}),
     requestCert: false,
 };
 
 
 class Server{
     constructor(config){
-        this._addr1 = config.addr1;
-        this._addr2 = config.addr2;
+        this._addr1 = config.primary.addr;
+        this._addr2 = config.secondary.addr;
 
-        this._port1 = config.port1;
-        this._port2 = config.port2;
+        this._port1 = config.primary.port;
+        this._port2 = config.secondary.port;
 
         this._tlsSocket = null;
-        this._tlsAddress = this._addr1;
-        this._tlsPort = config.tlsPort;
+        this._tlsAddress = config.tls.addr;
+        this._tlsPort = config.tls.port;
 
         this._sockets = [];
     }
 
     _onMessage(msg, rinfo, addr_id, port_id){
-        var msgObj = Message();
+        var msgObj = new Message();
 
         var err = null;
+
+        var socket = this._sockets[2 * addr_id + port_id];
 
         try{
             try{
@@ -101,8 +107,8 @@ class Server{
 
             // check checksum integrity (HMAC SHA1)
             if(INTEGRITY_REQUIRED){
-                var checkSum = msgObj.getAttribute('MESSAGE-INTEGRITY');
-                var username = msgObj.getAttribute('USERNAME');
+                var checkSum = msgObj.getAttr('MESSAGE-INTEGRITY');
+                var username = msgObj.getAttr('USERNAME');
 
                 if(checkSum != undefined){
                     if(username != undefined){
@@ -110,9 +116,16 @@ class Server{
                             // check is auths are still fresh
                             if(checkTokenFresh(msgObj._transactionId)){
                                 var checkSumSlice = msg.slice(0, msg.length - 4 - CHECKSUM_LENGTH);
+
+                                // add padding
+                                var paddingLength = (64 - (checkSumSlice.length % 64)) % 64;
+                                var paddingBuffer = Buffer.alloc(paddingLength);
+                                paddingBuffer.fill(0);
+
+                                checkSumSlice = Buffer.concat([checkSumSlice, paddingBuffer]);
                                 var computedCheckSum = HMAC_SHA1(checkSumSlice, MESSAGE_INTEGRITY_PK);
 
-                                if(checkSum != computedCheckSum){
+                                if(Buffer.compare(checkSum, computedCheckSum) != 0){
                                     // integrity check failure
                                     err = 431;
                                 }
@@ -139,7 +152,7 @@ class Server{
             }
 
             // change address and port if change requested
-            var changeInet = msgObj.getAttribute('CHANGE-REQUEST');
+            var changeInet = msgObj.getAttr('CHANGE-REQUEST');
             if(changeInet != undefined){
                 const {changeIP, changePort} = changeInet;
 
@@ -152,14 +165,14 @@ class Server{
              * server must a return a REFLECTED-FROM attribute to show which the ip the request came from
              * to avoid the STUN server being used as a reflector in DOS attacks
              */
-            var responseAddress = msgObj.getAttribute('RESPONSE-ADDRESS');
+            var responseAddress = msgObj.getAttr('RESPONSE-ADDRESS');
 
             msgObj.reset();
 
             if(responseAddress != undefined){
                 // add REFLECTED-FROM attribute
                 msgObj.addAttr('REFLECTED-FROM', {
-                    FAMILY: family,
+                    FAMILY: IPFAMILY,
                     PORT: rinfo.port,
                     IPv4: rinfo.address
                 })
@@ -167,17 +180,16 @@ class Server{
 
             // add mapped address
             msgObj.addAttr('MAPPED-ADDRESS', {
-                FAMILY: family,
+                FAMILY: IPFAMILY,
                 PORT: rinfo.port,
                 IPv4: rinfo.address
             })
 
-            var socket = this._sockets[2 * addr_id + port_id];
 
             // add sourced address
             if(socket){
                 msgObj.addAttr('SOURCE-ADDRESS', {
-                    FAMILY: family,
+                    FAMILY: IPFAMILY,
                     PORT: socket.address().port,
                     IPv4: socket.address().address
                 })
@@ -186,11 +198,12 @@ class Server{
                 err = 500;
             }
 
-            var changedSocket = this._sockets[2 * (1 - addr_id) + (1 - port_id)]
+            var changedSocket = this._sockets[2 * (1 - addr_id) + (1 - port_id)];
+
             // add changed address
             if(changedSocket){
                 msgObj.addAttr('CHANGED-ADDRESS', {
-                    FAMILY: family,
+                    FAMILY: IPFAMILY,
                     PORT: changedSocket.address().port,
                     IPv4: changedSocket.address().address
                 })
@@ -210,12 +223,13 @@ class Server{
             }
         }
         catch(ex){
+            console.log(ex)
             // reset message and add error code
             msgObj.reset()
 
-            message.setType(msgTypesInv['Binding Error Response']);
+            msgObj.setType(msgTypesInv['Binding Error Response']);
 
-            message.addAttr('ERROR-CODE', {
+            msgObj.addAttr('ERROR-CODE', {
                 statusCode: err,
                 message: errorCodes[err]
             });
@@ -227,6 +241,12 @@ class Server{
             var buf = msgObj.serialize();
             socket.send(buf, 0, buf.length, rinfo.port, rinfo.address);
         }
+    }
+
+    _onListening(addr_id, port_id){
+        var addr = (addr_id == 0 ? this._addr1 : this._addr2);
+        var port = (port_id == 0 ? this._port1 : this._port2);
+        console.log("udp server listening on: ", addr, " at port: ", port);
     }
 
     _onSharedSecretReq(buf){
@@ -256,7 +276,6 @@ class Server{
         }
 
         var sendBuf = message.serialize();
-        console.log(sendBuf, sendBuf.length);
         this._tlsSocket.write(sendBuf);
     }
 
@@ -275,9 +294,42 @@ class Server{
             for(var port_id = 0; port_id < 2; port_id++){
                 var socket = dgram.createSocket('udp4');
 
-                socket.on('message', (msg, rinfo) => {
-                    this._onMessage(msg, rinfo, addr_id, port_id);
-                })
+                if(addr_id == 0){
+                    if(port_id == 0){
+                        socket.on('message', (msg, rinfo) => {
+                            this._onMessage(msg, rinfo, 0, 0);
+                        });
+                        socket.on('listening', () => {
+                            this._onListening(0, 0);
+                        });
+                    }
+                    else{
+                        socket.on('message', (msg, rinfo) => {
+                            this._onMessage(msg, rinfo, 0, 1);
+                        });
+                        socket.on('listening', () => {
+                            this._onListening(0, 1);
+                        });
+                    }
+                }
+                else{
+                    if(port_id == 0){
+                        socket.on('message', (msg, rinfo) => {
+                            this._onMessage(msg, rinfo, 1, 0);
+                        });
+                        socket.on('listening', () => {
+                            this._onListening(1, 0);
+                        });
+                    }
+                    else{
+                        socket.on('message', (msg, rinfo) => {
+                            this._onMessage(msg, rinfo, 1, 1);
+                        });
+                        socket.on('listening', () => {
+                            this._onListening(1, 1);
+                        });
+                    }
+                }
 
                 var addr = (addr_id == 0 ? this._addr1 : this._addr2);
                 var port = (port_id == 0 ? this._port1 : this._port2);

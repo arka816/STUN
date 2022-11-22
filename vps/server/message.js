@@ -5,10 +5,10 @@
  * Author: Arka
  */
 
-const crypto = require('crypto');
 const assert = require('assert');
 
 const {
+    IPFAMILY,
     HEADER_LENGTH, 
     MAGIC_COOKIE, 
     TRANSACTION_ID_LENGTH, 
@@ -18,9 +18,9 @@ const {
     msgTypes,
     msgTypesInv,
     MESSAGE_INTEGRITY_PK
-} = require("./constants.js")
+} = require("../utils/constants.js")
 
-const {HMAC_SHA1, AToInetN} = require("./utils.js");
+const {HMAC_SHA1, AToInetN} = require("../utils/utils.js");
 
 
 
@@ -38,7 +38,9 @@ class Message{
     }
 
     getAttr(attrType){
-        return this._attrs.find((_attr) => { return _attr.type == attrType}).value;
+        var res = this._attrs.find((_attr) => { return _attr.type == attrType})
+        if(res == undefined) return res;
+        return res.value;
     }
 
     addAttr(attrType, attrVal){
@@ -203,13 +205,6 @@ class Message{
         return pos;
     }
 
-    static HMAC_SHA(message){
-        var shaSum = crypto.createHash('sha1');
-        shaSum.update(message);
-        var digest = shaSum.digest('utf-8');
-        return digest;
-    }
-
     #writeSHA(buf, pos, message){
         // pad message so that message is length is a multiple of 64 bytes
         var paddingLength = (64 - (message.length % 64)) % 64;
@@ -217,10 +212,9 @@ class Message{
         paddingBuffer.fill(0);
 
         message = Buffer.concat([message, paddingBuffer]);
-
         var digest = HMAC_SHA1(message, MESSAGE_INTEGRITY_PK);
 
-        buf.write(digest, pos);
+        digest.copy(buf, pos, 0, digest.length);
         pos += CHECKSUM_LENGTH;
 
         return pos;
@@ -292,8 +286,8 @@ class Message{
         pos += 2;
 
         // skip message length; add it later
-        var messageLengthStartPos = pos;
-        buf.writeUInt16BE(0x0000, pos);
+        var messageLength = size - (4 + TRANSACTION_ID_LENGTH);
+        buf.writeUInt16BE(messageLength, pos);
         pos += 2;
 
         // transaction id
@@ -303,8 +297,6 @@ class Message{
             buf[pos + i] = tid[i]; 
         }
         pos += TRANSACTION_ID_LENGTH;
-
-        var messagePayloadStartPos = pos;
 
         // add T-L-V's for each attribute
         for(var attr of this._attrs){
@@ -347,14 +339,13 @@ class Message{
                     var endPos = this.#writeSHA(buf, pos + 2, buf.slice(0, pos - 2));
                     break;
             }
+
             var attrLength = endPos - (pos + 2);
+            
             assert(attrLength <= (1 << 16), 'attribute length limit exceeded');
             buf.writeUInt16BE(attrLength, pos);
             pos = endPos;
         }
-
-        var messageLength = pos - messagePayloadStartPos;
-        buf.writeUInt16BE(messageLength, messageLengthStartPos);
 
         return buf;
     }
@@ -428,6 +419,7 @@ class Message{
             var attrLength = buf.readUInt16BE(pos);
             pos += 2;
 
+
             var attrVal;
 
             switch(attrType){
@@ -436,7 +428,7 @@ class Message{
                 case 'SOURCE-ADDRESS':
                 case 'REFLECTED-FROM':
                 case 'CHANGED-ADDRESS':
-                    if(attrLength != 4){
+                    if(attrLength != 8){
                         throw new Error('Inet address attribute malformed');
                     }
                     attrVal = this.#readInetAddress(buf, pos);
@@ -452,7 +444,7 @@ class Message{
                     if(attrLength % 4 != 0){
                         throw new Error(`value of ${attrType} malformed`);
                     }
-                    attrVal = buf.toString('utf-8', pos, pos + attrLength);
+                    attrVal = buf.slice(pos, pos + attrLength);
                     break;
                 case 'ERROR-CODE':
                     if(attrLength % 4 != 0){
@@ -462,7 +454,7 @@ class Message{
                     break;
                 case 'MESSAGE-INTEGRITY':
                     assert(attrLength == CHECKSUM_LENGTH, 'HMAC-SHA1 value must be 20 bytes');
-                    attrVal = buf.toString('utf-8', pos, pos + attrLength);
+                    attrVal = buf.slice(pos, pos + attrLength);
                     break;
             }
 

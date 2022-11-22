@@ -1,3 +1,5 @@
+'use strict';
+
 /**
   * Message attributes
                                              Binding  Shared  Shared  Shared
@@ -23,9 +25,10 @@ const hostname = '127.0.0.1';
 
 const tls = require('tls');
 const fs = require('fs');
+const dgram = require("node:dgram");
 
 const secureContext = tls.createSecureContext({
-    ca:fs.readFileSync('cert/ca/ca.crt', {encoding: 'utf-8'})
+    ca:fs.readFileSync('../cert/ca/ca.crt', {encoding: 'utf-8'})
 });
 
 const options = {
@@ -44,26 +47,72 @@ const {
     attrTypes,
     msgTypes,
     msgTypesInv
-} = require("./constants.js");
+} = require("../utils/constants.js");
 
-const Message = require("./message.js");
+const Message = require("../server/message.js");
 
-const {randTransID} = require("./utils.js");
+const {randTransID, printBuffer} = require("../utils/utils.js");
 const { assert } = require('console');
 
 
 class Client{
     constructor(){
-        this._session = null;
+        this._local_addr = '127.0.0.3';
+        this._local_port = 8000;
+
+        this._remote_addr = '127.0.0.1';
+        this._remote_port = 3478;
+
+        this._session = {};
+        this._tlsSocket = null;
+        this._udpSocket = null;
 
         this._sharedSecretReq();
+    }
 
-        this._bindingReq();
+    _onSharedSecretResponse(buf){
+        this._tlsSocket.end();
+
+        var message = new Message();
+        message.deserialize(buf);
+
+        if(message._msgType == msgTypesInv['Shared Secret Response']){
+            const username = message.getAttr('USERNAME');
+            const password = message.getAttr('PASSWORD');
+
+            assert(username != null && username != undefined && username.length == 36, "malformed username")
+            assert(password != null && password != undefined && password.length == 20, "malformed password")
+
+            this._session = {
+                ...this._session,
+                username: username, 
+                password: password
+            }
+        }
+        else if(message._msgType == msgTypesInv['Shared Secret Error Response']){
+            console.log(message.getAttr('ERROR-CODE'))
+            if(message.getAttr('ERROR-CODE').statusCode == 420){
+                throw new Error(message.getAttr('ERROR-CODE').message)
+            }
+        }
+        else{
+            throw new Error("message type not recognized");
+        }
+
+        // shared secret response received 
+        this._createUdpSockets();
     }
 
     _sharedSecretReq(){
         const socket = tls.connect(options, () => {
+            this._tlsSocket = socket;
+
+            process.on('SIGINT',function(){
+                this._tlsSocket.destroy();
+            }.bind(this));
+
             console.log('client connected', socket.authorized ? 'authorized' : 'unauthorized');
+
             if (!socket.authorized) {
                 console.log("Error: ", socket.authorizationError);
                 socket.end();
@@ -87,35 +136,7 @@ class Client{
                 socket.end();
             }
         })
-        .on('data', (buf) => {
-            socket.end();
-
-            var message = new Message();
-            message.deserialize(buf);
-
-            if(message._msgType == msgTypesInv['Shared Secret Response']){
-                const username = message.getAttr('USERNAME');
-                const password = message.getAttr('PASSWORD');
-
-                assert(username != null && username != undefined && username.length == 36, "malformed username")
-                assert(password != null && password != undefined && password.length == 20, "malformed password")
-
-                this._session = {
-                    ...this._session,
-                    username: username, 
-                    password: password
-                }
-            }
-            else if(message._msgType == msgTypesInv['Shared Secret Error Response']){
-                console.log(message.getAttr('ERROR-CODE'))
-                if(message.getAttr('ERROR-CODE').statusCode == 420){
-                    throw new Error(message.getAttr('ERROR-CODE').message)
-                }
-            }
-            else{
-                throw new Error("message type not recognized");
-            }
-        })
+        .on('data', this._onSharedSecretResponse.bind(this))
         .on('close', () => {
             console.log("Shared Secret Connection closed");
         })
@@ -128,11 +149,48 @@ class Client{
         });
     }
 
+    _onListening(){
+
+    }
+
+    _onReceived(msg, rinfo){
+        this._bres = new Message();
+
+        printBuffer(msg);
+
+        this._bres.deserialize(msg);
+
+        console.log(this._bres._attrs);
+    }
+
+    _createUdpSockets(){
+        this._udpSocket = dgram.createSocket('udp4');
+
+        this._udpSocket.on("listening", this._onListening.bind(this));
+        this._udpSocket.on("message", this._onReceived.bind(this));
+
+        this._udpSocket.bind(this._local_port, this._local_addr, this._bindingReq.bind(this));
+
+        process.on('SIGINT',function(){
+            this._udpSocket.destroy();
+        }.bind(this));
+    }
+
     _bindingReq(){
-        
+        this._breq = new Message();
+
+        this._breq.setType(msgTypesInv['Binding Request']);
+        this._breq.setTransactionID(this._session.tid);
+
+        this._breq.addAttr('USERNAME', this._session.username);
+        this._breq.addAttr('MESSAGE-INTEGRITY', '');
+
+        var buf = this._breq.serialize();
+
+        this._udpSocket.send(buf, 0, buf.length, this._remote_port, this._remote_addr);
     }
 }
 
 
 // shared secret request
-client = new Client();
+var client = new Client();

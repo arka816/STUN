@@ -1,3 +1,5 @@
+'use strict';
+
 const crypto = require('crypto');
 const assert = require('assert');
 
@@ -41,8 +43,6 @@ function generateAuth(transactionID, clientIP){
     const username = Buffer.concat([prefix, mins, IP, hmac]);
     const password = HMAC_SHA1(username, AUTH_PASSWORD_PK);
 
-    console.log(username, password);
-
     AUTH_LIST[transactionID] = {username, password};
 
     setTimeout(() => {
@@ -77,7 +77,6 @@ function HMAC_SHA1(message, key){
      * @returns {Buffer} 20 byte hmac value for the message using a private key and sha256
      */
     const hash = crypto.createHmac('sha1', key).update(message).digest();
-    console.log(hash.length)
     return hash;
 }
 
@@ -94,10 +93,19 @@ function randTransID(){
     return md5.digest();
 }
 
+function printBuffer(buf){
+    var index = 0;
+    while (index < buf.length){
+        console.log(buf.slice(index, Math.min(index + 4, buf.length)));
+        index += 4;
+    }
+}
+
 module.exports = {
     generateAuth,
     HMAC_SHA1,
     checkTokenFresh,
     randTransID,
-    AToInetN
+    AToInetN,
+    printBuffer
 }

@@ -1,4 +1,8 @@
+'use strict';
+
 const crypto = require('crypto');
+
+const IPFAMILY = 0x01;
 
 const HEADER_LENGTH = 20
 const MAGIC_COOKIE = 0x2112A442; /* RFC - 5389 */
@@ -17,7 +21,7 @@ const AUTH_MINS_MOD = 20;
 const AUTH_USERNAME_PK = crypto.randomBytes(16).toString('utf-8');
 const AUTH_PASSWORD_PK = crypto.randomBytes(16).toString('utf-8');
 
-const MESSAGE_INTEGRITY_PK = crypto.randomBytes(16).toString('utf-8');
+const MESSAGE_INTEGRITY_PK = 'mavis';
 
 const attrTypes = {
     0x0001: 'MAPPED-ADDRESS',
@@ -78,6 +82,7 @@ const errorCodes = {
 }
 
 module.exports = {
+    IPFAMILY,
     HEADER_LENGTH,
     MAGIC_COOKIE,
     TRANSACTION_ID_LENGTH,
