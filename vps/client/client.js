@@ -31,9 +31,7 @@ const secureContext = tls.createSecureContext({
     ca:fs.readFileSync('../cert/ca/ca.crt', {encoding: 'utf-8'})
 });
 
-const options = {
-    host: hostname,
-    port: port,
+const tlsOptions = {
     rejectUnauthorized: false,
     requestCert: true,
     secureContext: secureContext
@@ -57,11 +55,13 @@ const { assert } = require('console');
 
 class Client{
     constructor(){
-        this._local_addr = '127.0.0.3';
-        this._local_port = 8000;
+        this._local_addr = '0.0.0.0';
+        this._local_port = 3000;
 
-        this._remote_addr = '127.0.0.1';
+        this._remote_addr = '68.178.164.189';
         this._remote_port = 3478;
+
+        this._remote_tls_port = 8000;
 
         this._session = {};
         this._tlsSocket = null;
@@ -104,38 +104,45 @@ class Client{
     }
 
     _sharedSecretReq(){
-        const socket = tls.connect(options, () => {
-            this._tlsSocket = socket;
+        const socket = tls.connect(
+            {
+                ...tlsOptions,
+                host: this._remote_addr, 
+                port: this._remote_tls_port
+            }, 
+            () => {
+                this._tlsSocket = socket;
 
-            process.on('SIGINT',function(){
-                this._tlsSocket.destroy();
-            }.bind(this));
+                process.on('SIGINT',function(){
+                    this._tlsSocket.destroy();
+                }.bind(this));
 
-            console.log('client connected', socket.authorized ? 'authorized' : 'unauthorized');
+                console.log('client connected', socket.authorized ? 'authorized' : 'unauthorized');
 
-            if (!socket.authorized) {
-                console.log("Error: ", socket.authorizationError);
-                socket.end();
-            }
-            else{
-                // form shared secret request message
-                var message = new Message();
-                var transactionID = randTransID();
-
-                this._session = {
-                    ...this._session,
-                    tid: transactionID
+                if (!socket.authorized) {
+                    console.log("Error: ", socket.authorizationError);
+                    socket.end();
                 }
-        
-                message.setType(msgTypesInv['Shared Secret Request']);
-                message.setTransactionID(transactionID);
-        
-                var buf = message.serialize();
-        
-                socket.write(buf);
-                socket.end();
+                else{
+                    // form shared secret request message
+                    var message = new Message();
+                    var transactionID = randTransID();
+
+                    this._session = {
+                        ...this._session,
+                        tid: transactionID
+                    }
+            
+                    message.setType(msgTypesInv['Shared Secret Request']);
+                    message.setTransactionID(transactionID);
+            
+                    var buf = message.serialize();
+            
+                    socket.write(buf);
+                    socket.end();
+                }
             }
-        })
+        )
         .on('data', this._onSharedSecretResponse.bind(this))
         .on('close', () => {
             console.log("Shared Secret Connection closed");
@@ -168,8 +175,8 @@ class Client{
 
         this._udpSocket.on("listening", this._onListening.bind(this));
         this._udpSocket.on("message", this._onReceived.bind(this));
-
-        this._udpSocket.bind(this._local_port, this._local_addr, this._bindingReq.bind(this));
+        
+        this._udpSocket.bind(this._local_port, this._local_addr, this._bindingReq.bind(this))
 
         process.on('SIGINT',function(){
             this._udpSocket.destroy();
@@ -186,6 +193,8 @@ class Client{
         this._breq.addAttr('MESSAGE-INTEGRITY', '');
 
         var buf = this._breq.serialize();
+
+        console.log(buf);
 
         this._udpSocket.send(buf, 0, buf.length, this._remote_port, this._remote_addr);
     }

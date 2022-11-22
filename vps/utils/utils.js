@@ -61,7 +61,7 @@ function AToInetN(a){
     for(var loc of a.split('.')){
         loc = parseInt(loc);
         assert((loc >= 0) && (loc < 256), 'malformed IPv4');
-        inet = inet << 8;
+        inet = inet * (2 ** 8);
         inet += loc;
     }
 

@@ -9,16 +9,19 @@ const Server = require("./server/server.js");
 const config = (function initConfig(){
     var config = {};
     var defaults = {
+        server: {
+            index : 0
+        },
         primary: {
-            addr: '127.0.0.1',
+            addr: '0.0.0.0',
             port: '3478'
         },
         secondary: {
-            addr: '127.0.0.2',
+            addr: '68.178.166.10',
             port: '3479'
         },
         tls: {
-            addr: '127.0.0.1',
+            addr: '0.0.0.0',
             port: '8000'
         }
     };
@@ -38,4 +41,5 @@ const config = (function initConfig(){
 })();
 
 var server = new Server(config);
+
 server.listen();

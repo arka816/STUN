@@ -60,9 +60,8 @@ const tls = require('tls');
 const fs = require('node:fs');
 var path = require('path');
 
-console.log();
 
-const {generateAuth, HMAC_SHA1, checkTokenFresh} = require("../utils/utils.js");
+const {generateAuth, HMAC_SHA1, checkTokenFresh, printBuffer} = require("../utils/utils.js");
 const Message = require("./message.js");
 const { msgTypesInv, INTEGRITY_REQUIRED, MESSAGE_INTEGRITY_PK, errorCodes, CHECKSUM_LENGTH, IPFAMILY } = require("../utils/constants.js");
 
@@ -76,6 +75,8 @@ const tlsOptions = {
 
 class Server{
     constructor(config){
+        this._server = config.server.index;
+
         this._addr1 = config.primary.addr;
         this._addr2 = config.secondary.addr;
 
@@ -90,6 +91,8 @@ class Server{
     }
 
     _onMessage(msg, rinfo, addr_id, port_id){
+        console.log('message received');
+
         var msgObj = new Message();
 
         var err = null;
@@ -198,19 +201,20 @@ class Server{
                 err = 500;
             }
 
-            var changedSocket = this._sockets[2 * (1 - addr_id) + (1 - port_id)];
+            // var changedSocket = this._sockets[2 * (1 - addr_id) + (1 - port_id)];
+            // var changedAddr = changedSocket.address().address;
+            // var changedPort = changedSocket.address().port;
+
+            var changedAddr = (addr_id == 0) ? this._addr2 : this._addr1;
+            var changedPort = (port_id == 0) ? this._port2 : this._port1;
 
             // add changed address
-            if(changedSocket){
-                msgObj.addAttr('CHANGED-ADDRESS', {
-                    FAMILY: IPFAMILY,
-                    PORT: changedSocket.address().port,
-                    IPv4: changedSocket.address().address
-                })
-            }
-            else{
-                err = 500;
-            }
+            msgObj.addAttr('CHANGED-ADDRESS', {
+                FAMILY: IPFAMILY,
+                PORT: changedPort,
+                IPv4: changedAddr
+            });
+
 
             if(err != null){
                 throw new Error(`protocol error: ${err}`)
@@ -239,6 +243,7 @@ class Server{
         }
         finally{
             var buf = msgObj.serialize();
+            printBuffer(buf);
             socket.send(buf, 0, buf.length, rinfo.port, rinfo.address);
         }
     }
@@ -290,7 +295,7 @@ class Server{
     listen(){
         // UDP - for binding requests
         // create four sockets with 4 address-port combinations
-        for(var addr_id = 0; addr_id < 2; addr_id++){
+        for(var addr_id of [this._server]){
             for(var port_id = 0; port_id < 2; port_id++){
                 var socket = dgram.createSocket('udp4');
 
