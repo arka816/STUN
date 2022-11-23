@@ -75,8 +75,6 @@ const tlsOptions = {
 
 class Server{
     constructor(config){
-        this._server = config.server.index;
-
         this._addr1 = config.primary.addr;
         this._addr2 = config.secondary.addr;
 
@@ -201,12 +199,10 @@ class Server{
                 err = 500;
             }
 
-            // var changedSocket = this._sockets[2 * (1 - addr_id) + (1 - port_id)];
-            // var changedAddr = changedSocket.address().address;
-            // var changedPort = changedSocket.address().port;
+            var changedSocket = this._sockets[2 * (1 - addr_id) + (1 - port_id)];
+            var changedAddr = changedSocket.address().address;
+            var changedPort = changedSocket.address().port;
 
-            var changedAddr = (addr_id == 0) ? this._addr2 : this._addr1;
-            var changedPort = (port_id == 0) ? this._port2 : this._port1;
 
             // add changed address
             msgObj.addAttr('CHANGED-ADDRESS', {
@@ -295,7 +291,7 @@ class Server{
     listen(){
         // UDP - for binding requests
         // create four sockets with 4 address-port combinations
-        for(var addr_id of [this._server]){
+        for(var addr_id = 0; addr_id < 2; addr_id++){
             for(var port_id = 0; port_id < 2; port_id++){
                 var socket = dgram.createSocket('udp4');
 

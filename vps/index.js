@@ -9,9 +9,6 @@ const Server = require("./server/server.js");
 const config = (function initConfig(){
     var config = {};
     var defaults = {
-        server: {
-            index : 0
-        },
         primary: {
             addr: '0.0.0.0',
             port: '3478'
