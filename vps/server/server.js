@@ -239,7 +239,6 @@ class Server{
         }
         finally{
             var buf = msgObj.serialize();
-            printBuffer(buf);
             socket.send(buf, 0, buf.length, rinfo.port, rinfo.address);
         }
     }
